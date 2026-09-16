@@ -1,0 +1,13 @@
+# Rendered output written on every run of render_url.py
+rendered_page_*.json
+
+# Local configuration (copy config.example.json to config.json and edit)
+config.json
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Playwright
+/test-results/

@@ -1,0 +1,8 @@
+{
+  "timeout_ms": 30000,
+  "stabilization_ms": 1000,
+  "wait_until": "load",
+  "headless": true,
+  "output_prefix": "rendered_page",
+  "output_dir": "."
+}
