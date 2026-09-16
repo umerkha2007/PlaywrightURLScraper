@@ -1,6 +1,9 @@
 # Rendered output written on every run of render_url.py
 rendered_page_*.json
 
+# Parsed output written on every run of parse_html.py
+parsed_page_*.json
+
 # Local configuration (copy config.example.json to config.json and edit)
 config.json
 
@@ -11,3 +14,8 @@ __pycache__/
 
 # Playwright
 /test-results/
+
+# Packaging / build artifacts
+dist/
+build/
+*.egg-info/

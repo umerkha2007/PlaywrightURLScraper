@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "render-url"
+version = "1.0.0"
+description = "Render a single URL with Chromium (via Playwright) and emit the post-JS DOM as JSON."
+requires-python = ">=3.8"
+dependencies = [
+    "playwright>=1.40.0",
+    "beautifulsoup4>=4.12.0",
+]
+
+[project.scripts]
+render-url = "render_url:main"
+parse-html = "parse_html:main"
+render-and-parse = "render_and_parse:main"
+
+[tool.setuptools]
+py-modules = ["render_url", "parse_html", "render_and_parse"]

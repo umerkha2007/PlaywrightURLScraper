@@ -28,6 +28,9 @@ DEFAULT_CONFIG_PATH = "config.json"
 # wait_until values Playwright's page.wait_for_load_state() accepts.
 VALID_WAIT_UNTIL = ("load", "domcontentloaded", "networkidle")
 
+DEFAULT_VERBOSE = False
+DEFAULT_LOG_JSON = False
+
 DEFAULTS = {
     "url": None,
     "timeout_ms": DEFAULT_TIMEOUT_MS,
@@ -36,6 +39,8 @@ DEFAULTS = {
     "headless": DEFAULT_HEADLESS,
     "output_prefix": DEFAULT_OUTPUT_PREFIX,
     "output_dir": DEFAULT_OUTPUT_DIR,
+    "verbose": DEFAULT_VERBOSE,
+    "log_json": DEFAULT_LOG_JSON,
 }
 
 
@@ -51,10 +56,13 @@ def load_config_file(path):
         raise SystemExit(f"error: failed to read config file {path}: {e}")
     if not isinstance(data, dict):
         raise SystemExit(f"error: config file {path} must contain a JSON object.")
-    unknown = set(data) - set(DEFAULTS)
+    # "parser" is reserved for Step 2 (parse_html.py), which reads the same
+    # config file but only looks at this sub-key. Ignored here so both tools
+    # can share one config.json without render_url.py rejecting it as a typo.
+    unknown = set(data) - set(DEFAULTS) - {"parser"}
     if unknown:
         raise SystemExit(f"error: unknown config key(s) in {path}: {', '.join(sorted(unknown))}")
-    return data
+    return {k: v for k, v in data.items() if k != "parser"}
 
 
 def resolve_settings(args):
@@ -105,49 +113,65 @@ def is_valid_url(url):
         return False
 
 
+def _log(verbose, message):
+    if verbose:
+        print(f"[render-url] {message}", file=sys.stderr)
+
+
 def render(url, timeout_ms, stabilization_ms=DEFAULT_STABILIZATION_MS,
-           wait_until=DEFAULT_WAIT_UNTIL, headless=DEFAULT_HEADLESS):
+           wait_until=DEFAULT_WAIT_UNTIL, headless=DEFAULT_HEADLESS, verbose=False):
     with sync_playwright() as p:
         browser = None
         try:
+            _log(verbose, f"launching Chromium (headless={headless})")
             try:
                 browser = p.chromium.launch(headless=headless)
             except PlaywrightError as e:
+                _log(verbose, f"browser launch failed: {e}")
                 return error_result(url, "browser_error", str(e))
 
             page = browser.new_page()
             page.set_default_timeout(timeout_ms)
 
             status_code = None
+            _log(verbose, f"navigating to {url} (timeout={timeout_ms}ms)")
             try:
                 response = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
                 if response is not None:
                     status_code = response.status
+                _log(verbose, f"domcontentloaded (status={status_code})")
             except PlaywrightTimeoutError as e:
+                _log(verbose, f"navigation timed out: {e}")
                 return error_result(url, "navigation_timeout", str(e))
             except PlaywrightError as e:
+                _log(verbose, f"navigation error: {e}")
                 return error_result(url, "navigation_error", str(e))
 
             # Best-effort extra settle time beyond domcontentloaded, without
             # relying on networkidle by default (SPAs may keep long-lived
             # connections open and never reach it) — configurable via
             # wait_until for callers who do want it.
+            _log(verbose, f"waiting for load state \"{wait_until}\"")
             try:
                 page.wait_for_load_state(wait_until, timeout=timeout_ms)
             except PlaywrightTimeoutError:
-                pass
+                _log(verbose, f"load state \"{wait_until}\" timed out (continuing)")
             except PlaywrightError:
                 pass
 
+            _log(verbose, f"stabilizing for {stabilization_ms}ms")
             page.wait_for_timeout(stabilization_ms)
 
+            _log(verbose, "extracting outerHTML, title, and final URL")
             try:
                 html = page.evaluate("document.documentElement.outerHTML")
                 title = page.title()
                 final_url = page.url
             except PlaywrightError as e:
+                _log(verbose, f"HTML extraction failed: {e}")
                 return error_result(url, "html_extraction_error", str(e))
 
+            _log(verbose, f"done: {len(html)} chars of HTML captured")
             return build_result(
                 ok=True,
                 url=url,
@@ -159,6 +183,7 @@ def render(url, timeout_ms, stabilization_ms=DEFAULT_STABILIZATION_MS,
             )
         finally:
             if browser is not None:
+                _log(verbose, "closing Chromium")
                 try:
                     browser.close()
                 except PlaywrightError:
@@ -232,12 +257,30 @@ def parse_args(argv=None):
         default=None,
         help=f"Directory to write the output file into (default: {DEFAULT_OUTPUT_DIR}).",
     )
+    parser.add_argument(
+        "--verbose", "-v",
+        dest="verbose",
+        action="store_const",
+        const=True,
+        default=None,
+        help="Log rendering progress (navigation, waits, extraction, browser lifecycle) to stderr.",
+    )
+    parser.add_argument(
+        "--log-json",
+        dest="log_json",
+        action="store_const",
+        const=True,
+        default=None,
+        help="Additionally log the final result JSON, pretty-printed, to stderr.",
+    )
     return parser.parse_args(argv)
 
 
 def main():
     args = parse_args()
     settings = resolve_settings(args)
+    verbose = settings["verbose"]
+    log_json = settings["log_json"]
 
     url = settings["url"]
     if not url:
@@ -245,6 +288,7 @@ def main():
         sys.exit(1)
 
     if not is_valid_url(url):
+        _log(verbose, f"invalid URL: {url!r}")
         result = error_result(url, "invalid_url", "URL must be an absolute http(s) URL.")
     else:
         try:
@@ -254,14 +298,20 @@ def main():
                 stabilization_ms=settings["stabilization_ms"],
                 wait_until=settings["wait_until"],
                 headless=settings["headless"],
+                verbose=verbose,
             )
         except Exception as e:
+            _log(verbose, f"unexpected error: {e}")
             result = error_result(url, "unknown_error", str(e))
 
     output_text = json.dumps(result)
     print(output_text)
 
+    if log_json:
+        print(json.dumps(result, indent=2), file=sys.stderr)
+
     output_path = next_output_path(settings["output_prefix"], settings["output_dir"])
+    _log(verbose, f"writing output to {output_path}")
     try:
         output_path.write_text(output_text, encoding="utf-8")
     except OSError as e:

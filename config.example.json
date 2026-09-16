@@ -1,8 +1,19 @@
 {
+  "url": "https://example.com",
   "timeout_ms": 30000,
   "stabilization_ms": 1000,
   "wait_until": "load",
   "headless": true,
   "output_prefix": "rendered_page",
-  "output_dir": "."
+  "output_dir": ".",
+  "verbose": false,
+  "log_json": false,
+  "parser": {
+    "selector": null,
+    "strip_whitespace": true,
+    "output_prefix": "parsed_page",
+    "output_dir": ".",
+    "verbose": false,
+    "log_json": false
+  }
 }
