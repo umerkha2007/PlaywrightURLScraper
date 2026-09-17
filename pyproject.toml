@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "render-url"
 version = "1.0.0"
 description = "Render a single URL with Chromium (via Playwright) and emit the post-JS DOM as JSON."
+readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
     "playwright>=1.40.0",

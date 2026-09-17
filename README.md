@@ -109,6 +109,20 @@ render-url "https://example.com" | parse-html -
 python -m pytest tests/ -v
 ```
 
+### Publishing to PyPI
+
+```bash
+pip install build twine
+
+# bump "version" in pyproject.toml first, then:
+rm -rf dist build render_url.egg-info    # PowerShell: Remove-Item -Recurse -Force dist, build, render_url.egg-info -ErrorAction SilentlyContinue
+python -m build                # builds dist/*.whl and dist/*.tar.gz
+python -m twine check dist/*   # validates metadata before upload
+python -m twine upload dist/*  # uploads to PyPI (prompts for credentials/token)
+```
+
+Use `python -m twine upload --repository testpypi dist/*` to publish to [TestPyPI](https://test.pypi.org/) first if you want to verify the package before a real release.
+
 ## Configuration
 
 Precedence: **built-in defaults < `config.json` < CLI flags**. Both tools share one `config.json` (`parse-html` only reads its `"parser"` key). Copy [config.example.json](config.example.json) to get started — `config.json` is gitignored (local/per-environment). Unknown keys are rejected as typos.
