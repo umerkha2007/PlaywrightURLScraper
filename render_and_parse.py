@@ -18,6 +18,7 @@ from types import SimpleNamespace
 
 import render_url
 import parse_html
+import detector as detector_pkg
 
 
 def _log(verbose, message):
@@ -52,6 +53,11 @@ def parse_args(argv=None):
                          help="Log progress from both the render and parse stages to stderr.")
     parser.add_argument("--log-json", dest="log_json", action="store_const", const=True, default=None,
                          help="Additionally log the render stage and final parse stage JSON, pretty-printed, to stderr.")
+    parser.add_argument("--detect", dest="detect", action="store_const", const=True, default=None,
+                         help="Run deterministic page classification (CAPTCHA/login/error/closed-job/"
+                              "bot-challenge/application-form detection) before rendering. If the page "
+                              "does not classify as APPLICATION, parsing is skipped and the classification "
+                              "is returned instead. Configurable via the \"detector\" section of the config file.")
     return parser.parse_args(argv)
 
 
@@ -75,6 +81,7 @@ def main():
         output_dir=args.output_dir,
         verbose=args.verbose,
         log_json=args.log_json,
+        detect=args.detect,
     )
     render_settings = render_url.resolve_settings(render_args)
     verbose = render_settings["verbose"]
@@ -99,6 +106,8 @@ def main():
                 wait_until=render_settings["wait_until"],
                 headless=render_settings["headless"],
                 verbose=verbose,
+                detect=render_settings["detect"],
+                detector_config=detector_pkg.load_detector_config(args.config) if render_settings["detect"] else None,
             )
         except Exception as e:
             render_result = render_url.error_result(url, "unknown_error", str(e))
@@ -126,7 +135,23 @@ def main():
 
     _log(verbose, "stage 2/2: parsing rendered HTML")
     html = render_result.get("html")
-    if not render_result.get("ok", False) or html is None:
+    detected_status = render_result.get("status")
+    if detected_status is not None and detected_status != "APPLICATION":
+        _log(verbose, f"detector classified page as {detected_status}; skipping parse")
+        parse_result = parse_html.build_result(
+            ok=True,
+            source_url=render_result.get("final_url") or render_result.get("url"),
+            title=render_result.get("title"),
+            data=None,
+            selector_matched=None,
+            error=None,
+        )
+        parse_result["status"] = detected_status
+        parse_result["reason"] = render_result.get("reason")
+        parse_result["detector"] = render_result.get("detector")
+        parse_result["form"] = render_result.get("form")
+        parse_result["redirected"] = render_result.get("redirected")
+    elif not render_result.get("ok", False) or html is None:
         _log(verbose, "render stage failed or produced no html; skipping parse")
         parse_result = parse_html.error_result(url, "missing_html", "Step 1 result had ok=false or a null html field.")
     else:
@@ -140,6 +165,12 @@ def main():
             parse_result = parse_html.parse_html(html, config=parse_config)
         except Exception as e:
             parse_result = parse_html.error_result(url, "unknown_error", str(e))
+        if detected_status is not None:
+            parse_result["status"] = detected_status
+            parse_result["reason"] = render_result.get("reason")
+            parse_result["detector"] = render_result.get("detector")
+            parse_result["form"] = render_result.get("form")
+            parse_result["redirected"] = render_result.get("redirected")
 
     parse_output_path = parse_html.next_output_path(parse_settings["output_prefix"], parse_settings["output_dir"])
     _log(verbose, f"writing parse stage output to {parse_output_path}")

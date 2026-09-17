@@ -33,6 +33,30 @@ Useful flags:
 - `--no-strip-whitespace` — preserve raw whitespace in extracted text instead of collapsing it.
 - `--verbose` — log each pipeline step to stderr.
 - `--log-json` — pretty-print the full result JSON to stderr as well.
+- `--detect` — run deterministic page classification (see below) before rendering. Useful for job-application URLs, where the page may turn out to be a CAPTCHA, login wall, error page, closed job, or bot/security challenge instead of the actual application. If the page classifies as anything other than `APPLICATION`, parsing is skipped and the classification is returned instead of extracted page data.
+
+### Application detection (`--detect`)
+
+Runs entirely deterministic checks (no LLM/AI) against the rendered DOM and HTTP status: CAPTCHA, bot/security challenge (with a short navigate → wait → inspect → wait → inspect retry loop), login wall, HTTP/rendered error, closed/expired job, then an application-form evidence score. Output gains these fields:
+
+```json
+{
+  "status": "APPLICATION",
+  "reason": "application_form_detected",
+  "detector": {
+    "captcha": false,
+    "login": false,
+    "bot_challenge": false,
+    "error": false,
+    "closed_job": false,
+    "form_detected": true
+  },
+  "form": {"count": 1, "inputs": 17, "textareas": 2, "selects": 3, "file_inputs": 1},
+  "redirected": true
+}
+```
+
+`status` is one of `APPLICATION`, `CAPTCHA`, `LOGIN`, `ERROR`, `CLOSED_JOB`, `BOT_CHALLENGE`, `NO_FORM`. When `status` is anything other than `APPLICATION`, `html`/`data` come back `null` — the page was never worth fully parsing. Thresholds, keyword lists, and challenge-wait timing are configurable via the `"detector"` section of `config.json` (see `config.example.json`).
 
 ### Two-stage: render and parse separately (when you need the raw HTML too)
 

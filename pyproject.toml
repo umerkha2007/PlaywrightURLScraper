@@ -20,3 +20,4 @@ render-and-parse = "render_and_parse:main"
 
 [tool.setuptools]
 py-modules = ["render_url", "parse_html", "render_and_parse"]
+packages = ["detector"]

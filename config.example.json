@@ -8,6 +8,7 @@
   "output_dir": ".",
   "verbose": false,
   "log_json": false,
+  "detect": false,
   "parser": {
     "selector": null,
     "strip_whitespace": true,
@@ -15,5 +16,10 @@
     "output_dir": ".",
     "verbose": false,
     "log_json": false
+  },
+  "detector": {
+    "threshold": 10,
+    "challenge_wait_ms": 2000,
+    "challenge_max_checks": 2
   }
 }

@@ -16,6 +16,8 @@ from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright, Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError
 
+import detector as detector_pkg
+
 
 DEFAULT_TIMEOUT_MS = 30000
 DEFAULT_STABILIZATION_MS = 1000
@@ -30,6 +32,7 @@ VALID_WAIT_UNTIL = ("load", "domcontentloaded", "networkidle")
 
 DEFAULT_VERBOSE = False
 DEFAULT_LOG_JSON = False
+DEFAULT_DETECT = False
 
 DEFAULTS = {
     "url": None,
@@ -41,6 +44,7 @@ DEFAULTS = {
     "output_dir": DEFAULT_OUTPUT_DIR,
     "verbose": DEFAULT_VERBOSE,
     "log_json": DEFAULT_LOG_JSON,
+    "detect": DEFAULT_DETECT,
 }
 
 
@@ -56,13 +60,14 @@ def load_config_file(path):
         raise SystemExit(f"error: failed to read config file {path}: {e}")
     if not isinstance(data, dict):
         raise SystemExit(f"error: config file {path} must contain a JSON object.")
-    # "parser" is reserved for Step 2 (parse_html.py), which reads the same
-    # config file but only looks at this sub-key. Ignored here so both tools
-    # can share one config.json without render_url.py rejecting it as a typo.
-    unknown = set(data) - set(DEFAULTS) - {"parser"}
+    # "parser" and "detector" are reserved for Step 2 (parse_html.py) and the
+    # detector package respectively, which read the same config file but only
+    # look at their own sub-key. Ignored here so all tools can share one
+    # config.json without render_url.py rejecting them as typos.
+    unknown = set(data) - set(DEFAULTS) - {"parser", "detector"}
     if unknown:
         raise SystemExit(f"error: unknown config key(s) in {path}: {', '.join(sorted(unknown))}")
-    return {k: v for k, v in data.items() if k != "parser"}
+    return {k: v for k, v in data.items() if k not in ("parser", "detector")}
 
 
 def resolve_settings(args):
@@ -85,8 +90,9 @@ def next_output_path(prefix, directory="."):
         n += 1
 
 
-def build_result(ok, url, final_url=None, status_code=None, title=None, html=None, error=None):
-    return {
+def build_result(ok, url, final_url=None, status_code=None, title=None, html=None, error=None,
+                  status=None, detector=None, reason=None, form=None, redirected=None):
+    result = {
         "ok": ok,
         "url": url,
         "final_url": final_url,
@@ -95,6 +101,15 @@ def build_result(ok, url, final_url=None, status_code=None, title=None, html=Non
         "html": html,
         "error": error,
     }
+    # Only present when --detect was used, so non-detect output stays
+    # byte-for-byte identical to before this feature existed.
+    if status is not None:
+        result["status"] = status
+        result["redirected"] = redirected
+        result["reason"] = reason
+        result["detector"] = detector
+        result["form"] = form
+    return result
 
 
 def error_result(url, error_type, message):
@@ -118,8 +133,30 @@ def _log(verbose, message):
         print(f"[render-url] {message}", file=sys.stderr)
 
 
+def _run_challenge_wait_loop(page, status_code, detector_config, verbose):
+    """navigate -> wait -> inspect -> wait -> inspect, per the BOT_CHALLENGE spec.
+
+    Returns the final classify() result once the page is no longer showing a
+    bot/security challenge, or once challenge_max_checks is exhausted.
+    """
+    wait_ms = detector_config.get("challenge_wait_ms", 2000)
+    max_checks = detector_config.get("challenge_max_checks", 2)
+
+    result = None
+    for attempt in range(max_checks + 1):
+        html = page.evaluate("document.documentElement.outerHTML")
+        result = detector_pkg.classify(html, status_code=status_code, config=detector_config)
+        if not result["detector"]["bot_challenge"]:
+            return result
+        if attempt < max_checks:
+            _log(verbose, f"bot challenge detected (attempt {attempt + 1}/{max_checks}); waiting {wait_ms}ms and re-inspecting")
+            page.wait_for_timeout(wait_ms)
+    return result
+
+
 def render(url, timeout_ms, stabilization_ms=DEFAULT_STABILIZATION_MS,
-           wait_until=DEFAULT_WAIT_UNTIL, headless=DEFAULT_HEADLESS, verbose=False):
+           wait_until=DEFAULT_WAIT_UNTIL, headless=DEFAULT_HEADLESS, verbose=False,
+           detect=False, detector_config=None):
     with sync_playwright() as p:
         browser = None
         try:
@@ -159,6 +196,38 @@ def render(url, timeout_ms, stabilization_ms=DEFAULT_STABILIZATION_MS,
             except PlaywrightError:
                 pass
 
+            detection = None
+            if detect:
+                detector_config = detector_config or detector_pkg.load_detector_config(DEFAULT_CONFIG_PATH)
+                _log(verbose, "running application detector (redirect/CAPTCHA/login/error/closed-job/bot-challenge checks)")
+                try:
+                    detection = _run_challenge_wait_loop(page, status_code, detector_config, verbose)
+                except PlaywrightError as e:
+                    _log(verbose, f"detection failed: {e}")
+                    return error_result(url, "detection_error", str(e))
+                _log(verbose, f"classification: {detection['status']} (reason={detection['reason']})")
+
+                if detection["status"] != detector_pkg.constants.STATUS_APPLICATION:
+                    try:
+                        final_url = page.url
+                        title = page.title()
+                    except PlaywrightError:
+                        final_url, title = page.url, None
+                    return build_result(
+                        ok=True,
+                        url=url,
+                        final_url=final_url,
+                        status_code=status_code,
+                        title=title,
+                        html=None,
+                        error=None,
+                        status=detection["status"],
+                        detector=detection["detector"],
+                        reason=detection["reason"],
+                        form=detection["form"],
+                        redirected=(final_url != url),
+                    )
+
             _log(verbose, f"stabilizing for {stabilization_ms}ms")
             page.wait_for_timeout(stabilization_ms)
 
@@ -180,6 +249,11 @@ def render(url, timeout_ms, stabilization_ms=DEFAULT_STABILIZATION_MS,
                 title=title,
                 html=html,
                 error=None,
+                status=detection["status"] if detection else None,
+                detector=detection["detector"] if detection else None,
+                reason=detection["reason"] if detection else None,
+                form=detection["form"] if detection else None,
+                redirected=(final_url != url) if detection else None,
             )
         finally:
             if browser is not None:
@@ -273,6 +347,17 @@ def parse_args(argv=None):
         default=None,
         help="Additionally log the final result JSON, pretty-printed, to stderr.",
     )
+    parser.add_argument(
+        "--detect",
+        dest="detect",
+        action="store_const",
+        const=True,
+        default=None,
+        help="Run deterministic page classification (CAPTCHA/login/error/closed-job/bot-challenge/"
+             "application-form detection) before extracting HTML. If the page does not classify as "
+             "APPLICATION, the result carries the classification instead of the rendered HTML. "
+             "Configurable via the \"detector\" section of the config file.",
+    )
     return parser.parse_args(argv)
 
 
@@ -299,6 +384,8 @@ def main():
                 wait_until=settings["wait_until"],
                 headless=settings["headless"],
                 verbose=verbose,
+                detect=settings["detect"],
+                detector_config=detector_pkg.load_detector_config(args.config) if settings["detect"] else None,
             )
         except Exception as e:
             _log(verbose, f"unexpected error: {e}")

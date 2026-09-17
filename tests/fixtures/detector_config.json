@@ -1,0 +1,6 @@
+{
+  "detector": {
+    "challenge_wait_ms": 100,
+    "challenge_max_checks": 1
+  }
+}
