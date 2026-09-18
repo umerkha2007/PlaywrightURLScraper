@@ -106,18 +106,20 @@ render-url "https://example.com" | parse-html -
 
 ### Raw HTML output (`render-url --raw-html`)
 
-Use this when you need the page's rendered HTML itself — to grep it, feed it to your own extraction, or inspect markup the structured parse drops — and don't want to unwrap it from JSON.
+Use this when you need the page's rendered HTML itself (clean, pretty-printed `<body>` markup with no scripts or CSS) — to grep it, feed it to your own extraction, or inspect markup the structured parse drops — and don't want to unwrap it from JSON.
 
 ```bash
-render-url "https://example.com" --raw-html > page.html
+render-url "https://example.com" --raw-html --no-detect > page.html
 ```
+
+Default recipe: **use `--raw-html --no-detect` together** unless you specifically want the page classified. (`--no-detect` matters because a project `config.json` may set `"detect": true`, which would otherwise turn a plain job-listing page into a `NO_FORM` JSON result.)
 
 Exactly how to use it:
 - Pass `--raw-html` to **`render-url`** only (not `render-and-parse` or `parse-html`, which don't accept it). Every other `render-url` flag (`--timeout`, `--wait-until`, `--stabilization`, `--detect`, `--output-dir`, ...) still works alongside it.
-- On success, **stdout is the raw post-JS HTML and nothing else**. It is also saved to `<output-prefix>_N.html` (default `rendered_page_N.html`, auto-incremented). Redirect stdout to a file or read the saved file; don't try to `json.loads` it.
+- On success, **stdout is the post-JS `<body>` markup and nothing else** — HTML only: no `<head>`, no `<script>`/`<style>`/`<link>`/`<noscript>`/`<template>` elements, and no inline `style`/`on*` attributes. The markup is pretty-printed (one tag per line, indented). Because `<head>` is dropped, `<title>`, meta tags and JSON-LD data are not in this output; use `render-and-parse` (or `render-url` without `--raw-html`) if you need them. It is also saved to `<output-prefix>_N.html` (default `rendered_page_N.html`, auto-incremented). Redirect stdout to a file or read the saved file; don't try to `json.loads` it.
 - **Always check what you got.** If no HTML could be produced, stdout is the normal JSON result instead (`{"ok": false, "error": {...}}`, or with `--detect`, a `status` other than `APPLICATION` and `"html": null`), and the saved file is `.json` rather than `.html`. Treat output beginning with `{"ok":` as the failure/classification case and read `error` or `status`/`reason`. Real HTML begins with `<`.
 - If the HTML looks like an empty shell for a JS-heavy page, re-run with a larger `--stabilization` (e.g. `3000`) or `--wait-until networkidle`.
-- Don't combine with `--detect` unless you want the page gated: with `--detect` (or `"detect": true` in `config.json`), any non-`APPLICATION` page returns JSON, not HTML. Note there is no CLI flag to turn detect off, so if `config.json` enables it and you need HTML regardless, pass `--config` pointing at a file with `"detect": false`.
+- Don't combine with `--detect` unless you want the page gated: with `--detect` (or `"detect": true` in `config.json`), any non-`APPLICATION` page returns JSON, not HTML. If `config.json` enables detect and you need HTML regardless (e.g. a plain job listing page classifies as `NO_FORM`), pass `--no-detect`.
 - Clean up the auto-incremented `.html` files when done.
 
 ## Output schema (parse-html / render-and-parse)
@@ -145,5 +147,5 @@ On failure: `ok: false` and `error: {"type": "...", "message": "..."}`. Error ty
 
 - Exactly one URL per invocation — no crawling or link-following. To process multiple URLs, call the command once per URL.
 - Output files (`rendered_page_N.json`, `parsed_page_N.json`, or `rendered_page_N.html` with `--raw-html`) auto-increment and never overwrite existing files in the working directory — clean these up if not needed after use.
-- All output is a single JSON object on stdout (except `render-url --raw-html`, which prints raw HTML on success); diagnostics only ever go to stderr, so stdout is always safe to parse directly.
+- All output is a single JSON object on stdout (except `render-url --raw-html`, which prints pretty-printed body-only HTML on success); diagnostics only ever go to stderr, so stdout is always safe to parse directly.
 - `--answer-questions` is the sole exception to "no LLM/AI" above — it's opt-in and every other command/flag remains deterministic and offline.

@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright, Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError
 
 import detector as detector_pkg
@@ -34,6 +35,19 @@ DEFAULT_VERBOSE = False
 DEFAULT_LOG_JSON = False
 DEFAULT_DETECT = False
 DEFAULT_RAW_HTML = False
+
+# Body-only, markup-only extraction used by --raw-html: drops <script>/<style>/<link>
+# (and other non-content) elements plus inline style="" and on*="" attributes.
+BODY_ONLY_JS = """() => {
+  const body = document.body.cloneNode(true);
+  body.querySelectorAll('script, style, link, noscript, template').forEach(e => e.remove());
+  for (const el of [body, ...body.querySelectorAll('*')]) {
+    for (const a of Array.from(el.attributes)) {
+      if (a.name === 'style' || a.name.startsWith('on')) el.removeAttribute(a.name);
+    }
+  }
+  return body.outerHTML;
+}"""
 
 DEFAULTS = {
     "url": None,
@@ -81,6 +95,11 @@ def resolve_settings(args):
         if cli_value is not None:
             settings[key] = cli_value
     return settings
+
+
+def format_html(html):
+    """Pretty-print HTML with one tag per line and consistent indentation."""
+    return BeautifulSoup(html, "html.parser").prettify()
 
 
 def next_output_path(prefix, directory=".", ext="json"):
@@ -158,7 +177,7 @@ def _run_challenge_wait_loop(page, status_code, detector_config, verbose):
 
 def render(url, timeout_ms, stabilization_ms=DEFAULT_STABILIZATION_MS,
            wait_until=DEFAULT_WAIT_UNTIL, headless=DEFAULT_HEADLESS, verbose=False,
-           detect=False, detector_config=None):
+           detect=False, detector_config=None, body_only=False):
     with sync_playwright() as p:
         browser = None
         try:
@@ -235,12 +254,15 @@ def render(url, timeout_ms, stabilization_ms=DEFAULT_STABILIZATION_MS,
 
             _log(verbose, "extracting outerHTML, title, and final URL")
             try:
-                html = page.evaluate("document.documentElement.outerHTML")
+                html = page.evaluate(BODY_ONLY_JS if body_only else "document.documentElement.outerHTML")
                 title = page.title()
                 final_url = page.url
             except PlaywrightError as e:
                 _log(verbose, f"HTML extraction failed: {e}")
                 return error_result(url, "html_extraction_error", str(e))
+
+            if body_only:
+                html = format_html(html)
 
             _log(verbose, f"done: {len(html)} chars of HTML captured")
             return build_result(
@@ -361,12 +383,20 @@ def parse_args(argv=None):
              "Configurable via the \"detector\" section of the config file.",
     )
     parser.add_argument(
+        "--no-detect",
+        dest="detect",
+        action="store_const",
+        const=False,
+        help="Turn page classification off, overriding \"detect\": true in the config file.",
+    )
+    parser.add_argument(
         "--raw-html",
         dest="raw_html",
         action="store_const",
         const=True,
         default=None,
-        help="Emit the rendered HTML itself (not JSON) to stdout and to <prefix>_N.html. All other "
+        help="Emit the rendered <body> markup only, pretty-printed (no scripts, styles, links, inline style/on* attributes; "
+             "not JSON) to stdout and to <prefix>_N.html. All other "
              "options still apply. If no HTML was produced (error, or --detect classified the page "
              "as non-APPLICATION), the JSON result is emitted instead so the failure is visible.",
     )
@@ -398,6 +428,7 @@ def main():
                 verbose=verbose,
                 detect=settings["detect"],
                 detector_config=detector_pkg.load_detector_config(args.config) if settings["detect"] else None,
+                body_only=settings["raw_html"],
             )
         except Exception as e:
             _log(verbose, f"unexpected error: {e}")

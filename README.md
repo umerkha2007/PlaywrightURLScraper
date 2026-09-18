@@ -40,23 +40,32 @@ Prints one JSON object to stdout and writes it to an auto-incremented file (`ren
 | Output dir | `--output-dir <dir>` | `.` | Directory the output file is written into. |
 | Verbose | `--verbose` / `-v` | off | Log progress (navigation, waits, extraction, browser lifecycle) to stderr. Stdout still carries only the final JSON. |
 | Log JSON | `--log-json` | off | Additionally pretty-print the final result JSON to stderr. |
-| Detect | `--detect` | off | Check what kind of page this actually is before returning HTML. See [Detecting what kind of page you got](#detecting-what-kind-of-page-you-got) below. |
-| Raw HTML | `--raw-html` | off | Print the rendered HTML itself (not JSON) to stdout and write it to `<prefix>_N.html`. All other options still apply. If no HTML was produced (an error, or `--detect` found a non-application page), the JSON result is printed instead so you can see why. |
+| Detect | `--detect` / `--no-detect` | off | Check what kind of page this actually is before returning HTML. `--no-detect` overrides `"detect": true` in the config file. See [Detecting what kind of page you got](#detecting-what-kind-of-page-you-got) below. |
+| Raw HTML | `--raw-html` | off | Print the rendered page's `<body>` markup (pretty-printed, no scripts/styles; not JSON) to stdout and write it to `<prefix>_N.html`. All other options still apply. If no HTML was produced (an error, or `--detect` found a non-application page), the JSON result is printed instead so you can see why. |
 
 #### Raw HTML mode (`--raw-html`)
 
-Want the page's HTML itself rather than a JSON wrapper around it? Add `--raw-html`:
+Want the page's HTML itself rather than a JSON wrapper around it? Add `--raw-html`. You get clean, readable `<body>` markup: no scripts, styles or `<head>`, formatted one tag per line.
 
 ```bash
 render-url "https://example.com" --raw-html                       # HTML on stdout + rendered_page_1.html
 render-url "https://example.com" --raw-html > page.html           # capture just the HTML
 render-url "https://example.com" --raw-html --stabilization 3000  # every other option still applies
+render-url "https://example.com/job/1" --raw-html --no-detect     # skip page classification (needed if config has detect on)
 ```
 
-- stdout is the post-JavaScript HTML (`document.documentElement.outerHTML`) and nothing else; diagnostics (`-v`) still go to stderr.
+**Sample command** — render a JS-heavy job page (skipping classification, since a plain listing has no application form), give it extra settle time, and save the HTML under a custom name and folder:
+
+```bash
+render-url "https://positrace.bamboohr.com/careers/122" --raw-html --no-detect --stabilization 3000 --output-dir out --output-prefix positrace
+```
+
+This prints the HTML to your terminal **and** writes it to `out/positrace_1.html` (the folder must already exist; the next run writes `positrace_2.html`). It always does both — there's no option to print without saving.
+
+- stdout is the post-JavaScript **`<body>` markup only** and nothing else: no `<head>`, and every `<script>`, `<style>`, `<link>`, `<noscript>` and `<template>` element is removed, along with inline `style="..."` and `on*="..."` (event handler) attributes. Only HTML remains, and it is pretty-printed (one tag per line, indented). (This means page metadata such as `<title>`, meta tags and JSON-LD (`<script type="application/ld+json">`) job data is not included; use the normal JSON mode if you need the full document.) Diagnostics (`-v`) still go to stderr.
 - The file written is `<prefix>_N.html` (auto-incremented, never overwrites) instead of `.json`.
 - **Fallback:** if there is no HTML to return — the render failed, or `--detect` classified the page as anything other than `APPLICATION` — the normal JSON result is printed instead (and saved as `.json`), so you can see what went wrong. Check whether stdout starts with `{"ok":` to tell the two apart.
-- Can also be set with `"raw_html": true` in `config.json`. If your config has `"detect": true`, non-application pages will hit the fallback above.
+- Can also be set with `"raw_html": true` in `config.json`. If your config has `"detect": true`, non-application pages (e.g. a plain job listing, classified `NO_FORM`) hit the fallback above and return JSON — pass `--no-detect` to get the HTML anyway.
 
 ### `parse-html` — extract structured data from rendered HTML
 
