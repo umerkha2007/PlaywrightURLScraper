@@ -196,6 +196,9 @@ def render(url, timeout_ms, stabilization_ms=DEFAULT_STABILIZATION_MS,
             except PlaywrightError:
                 pass
 
+            _log(verbose, f"stabilizing for {stabilization_ms}ms")
+            page.wait_for_timeout(stabilization_ms)
+
             detection = None
             if detect:
                 detector_config = detector_config or detector_pkg.load_detector_config(DEFAULT_CONFIG_PATH)
@@ -227,9 +230,6 @@ def render(url, timeout_ms, stabilization_ms=DEFAULT_STABILIZATION_MS,
                         form=detection["form"],
                         redirected=(final_url != url),
                     )
-
-            _log(verbose, f"stabilizing for {stabilization_ms}ms")
-            page.wait_for_timeout(stabilization_ms)
 
             _log(verbose, "extracting outerHTML, title, and final URL")
             try:
