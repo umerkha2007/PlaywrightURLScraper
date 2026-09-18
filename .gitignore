@@ -7,6 +7,10 @@ parsed_page_*.json
 # Local configuration (copy config.example.json to config.json and edit)
 config.json
 
+# --answer-questions: secrets and personal data, never commit
+.env
+resume.md
+
 # Python
 __pycache__/
 *.pyc

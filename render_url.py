@@ -33,6 +33,7 @@ VALID_WAIT_UNTIL = ("load", "domcontentloaded", "networkidle")
 DEFAULT_VERBOSE = False
 DEFAULT_LOG_JSON = False
 DEFAULT_DETECT = False
+DEFAULT_RAW_HTML = False
 
 DEFAULTS = {
     "url": None,
@@ -45,6 +46,7 @@ DEFAULTS = {
     "verbose": DEFAULT_VERBOSE,
     "log_json": DEFAULT_LOG_JSON,
     "detect": DEFAULT_DETECT,
+    "raw_html": DEFAULT_RAW_HTML,
 }
 
 
@@ -81,10 +83,10 @@ def resolve_settings(args):
     return settings
 
 
-def next_output_path(prefix, directory="."):
+def next_output_path(prefix, directory=".", ext="json"):
     n = 1
     while True:
-        candidate = Path(directory) / f"{prefix}_{n}.json"
+        candidate = Path(directory) / f"{prefix}_{n}.{ext}"
         if not candidate.exists():
             return candidate
         n += 1
@@ -358,6 +360,16 @@ def parse_args(argv=None):
              "APPLICATION, the result carries the classification instead of the rendered HTML. "
              "Configurable via the \"detector\" section of the config file.",
     )
+    parser.add_argument(
+        "--raw-html",
+        dest="raw_html",
+        action="store_const",
+        const=True,
+        default=None,
+        help="Emit the rendered HTML itself (not JSON) to stdout and to <prefix>_N.html. All other "
+             "options still apply. If no HTML was produced (error, or --detect classified the page "
+             "as non-APPLICATION), the JSON result is emitted instead so the failure is visible.",
+    )
     return parser.parse_args(argv)
 
 
@@ -391,13 +403,15 @@ def main():
             _log(verbose, f"unexpected error: {e}")
             result = error_result(url, "unknown_error", str(e))
 
-    output_text = json.dumps(result)
+    raw_html = settings["raw_html"] and result.get("html") is not None
+    output_text = result["html"] if raw_html else json.dumps(result)
     print(output_text)
 
     if log_json:
         print(json.dumps(result, indent=2), file=sys.stderr)
 
-    output_path = next_output_path(settings["output_prefix"], settings["output_dir"])
+    output_path = next_output_path(settings["output_prefix"], settings["output_dir"],
+                                   "html" if raw_html else "json")
     _log(verbose, f"writing output to {output_path}")
     try:
         output_path.write_text(output_text, encoding="utf-8")

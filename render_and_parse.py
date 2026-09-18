@@ -58,6 +58,19 @@ def parse_args(argv=None):
                               "bot-challenge/application-form detection) before rendering. If the page "
                               "does not classify as APPLICATION, parsing is skipped and the classification "
                               "is returned instead. Configurable via the \"detector\" section of the config file.")
+    parser.add_argument("--answer-questions", dest="answer_questions", action="store_const", const=True,
+                         default=None,
+                         help="After parsing, use an LLM (Anthropic by default) to identify application/"
+                              "screening questions in the extracted text and answer them from your resume "
+                              "(see --resume). Off by default.")
+    parser.add_argument("--resume", dest="resume_path", default=None,
+                         help=f"Path to your resume in Markdown (default: {parse_html.DEFAULT_RESUME_PATH}).")
+    parser.add_argument("--qa-provider", dest="qa_provider", default=None,
+                         help=f"LLM provider for --answer-questions (default: {parse_html.DEFAULT_QA_PROVIDER}).")
+    parser.add_argument("--qa-model", dest="qa_model", default=None,
+                         help="Model short name or full model ID for --answer-questions (env: ANTHROPIC_MODEL).")
+    parser.add_argument("--qa-api-key", dest="qa_api_key", default=None,
+                         help="API key for --answer-questions (env: ANTHROPIC_API_KEY, or a .env file).")
     return parser.parse_args(argv)
 
 
@@ -87,9 +100,35 @@ def main():
     verbose = render_settings["verbose"]
     log_json = render_settings["log_json"]
 
+    parse_args_ns = SimpleNamespace(
+        config=args.config,
+        input=None,
+        input_opt=None,
+        selector=args.selector,
+        strip_whitespace=args.strip_whitespace,
+        output_prefix=None,
+        output_dir=args.output_dir,
+        verbose=args.verbose,
+        log_json=args.log_json,
+        answer_questions=args.answer_questions,
+        resume_path=args.resume_path,
+        qa_provider=args.qa_provider,
+        qa_model=args.qa_model,
+    )
+    parse_settings = parse_html.resolve_settings(parse_args_ns)
+
     url = render_settings["url"]
     if not url:
         result = parse_html.error_result(None, "invalid_input", "No URL provided via argument or config file.")
+        print(json.dumps(result))
+        _log_json(log_json, "final result", result)
+        sys.exit(1)
+
+    if parse_settings["answer_questions"] and not render_settings["detect"]:
+        result = parse_html.error_result(
+            url, "invalid_input",
+            "--answer-questions requires --detect: only pages classified as APPLICATION are sent to the LLM.",
+        )
         print(json.dumps(result))
         _log_json(log_json, "final result", result)
         sys.exit(1)
@@ -119,19 +158,6 @@ def main():
         render_output_path.write_text(json.dumps(render_result), encoding="utf-8")
     except OSError as e:
         print(f"warning: failed to write output file {render_output_path}: {e}", file=sys.stderr)
-
-    parse_args_ns = SimpleNamespace(
-        config=args.config,
-        input=None,
-        input_opt=None,
-        selector=args.selector,
-        strip_whitespace=args.strip_whitespace,
-        output_prefix=None,
-        output_dir=args.output_dir,
-        verbose=args.verbose,
-        log_json=args.log_json,
-    )
-    parse_settings = parse_html.resolve_settings(parse_args_ns)
 
     _log(verbose, "stage 2/2: parsing rendered HTML")
     html = render_result.get("html")
@@ -171,6 +197,15 @@ def main():
             parse_result["detector"] = render_result.get("detector")
             parse_result["form"] = render_result.get("form")
             parse_result["redirected"] = render_result.get("redirected")
+
+    if parse_settings["answer_questions"] and parse_result.get("ok") and parse_result.get("data") is not None:
+        gate_error = parse_html.qa_gate_error(detected_status)
+        if gate_error:
+            _log(verbose, gate_error)
+            parse_result["qa_error"] = gate_error
+        else:
+            _log(verbose, "stage 3/3: answering application questions via LLM")
+            parse_html.apply_answer_questions(parse_result, parse_settings, api_key=args.qa_api_key, verbose=verbose)
 
     parse_output_path = parse_html.next_output_path(parse_settings["output_prefix"], parse_settings["output_dir"])
     _log(verbose, f"writing parse stage output to {parse_output_path}")

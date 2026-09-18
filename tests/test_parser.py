@@ -14,6 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import parse_html  # noqa: E402
+import qa  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 PARSER_SCRIPT = ROOT / "parse_html.py"
@@ -229,3 +230,82 @@ def test_realistic_page():
     assert result["data"]["meta"]["og:image"] == "https://acme.example/cover.png"
     assert "console.log" not in result["data"]["text"]
     assert "background: #eee" not in result["data"]["text"]
+
+
+# --- qa_gate_error (--answer-questions requires --detect + APPLICATION) ----
+
+class TestQaGateError:
+    def test_no_status_is_blocked(self):
+        error = parse_html.qa_gate_error(None)
+        assert error is not None
+        assert "requires --detect" in error
+
+    def test_application_status_is_allowed(self):
+        assert parse_html.qa_gate_error("APPLICATION") is None
+
+    def test_non_application_status_is_blocked(self):
+        error = parse_html.qa_gate_error("CAPTCHA")
+        assert error is not None
+        assert "classified as CAPTCHA" in error
+
+
+# --- apply_answer_questions (--answer-questions) ----------------------------
+# qa.run() itself is unit-tested in tests/test_qa.py; here we only test the
+# glue in parse_html.apply_answer_questions() with qa.run() stubbed out.
+
+class TestApplyAnswerQuestions:
+    def _base_result(self):
+        html = load_fixture("full_page.html")
+        return parse_html.parse_html(html, config={"source_url": "https://example.com/job/1"})
+
+    def _settings(self):
+        return {"resume_path": "resume.md", "qa_provider": "anthropic", "qa_model": "sonnet5"}
+
+    def test_success_adds_questions_and_answers(self, monkeypatch):
+        result = self._base_result()
+
+        def fake_run(title, source_url, text, settings):
+            assert source_url == "https://example.com/job/1"
+            return {
+                "application_questions": ["Are you legally authorized to work in Canada?"],
+                "answers": [{"question": "Are you legally authorized to work in Canada?", "answer": "Yes."}],
+            }
+
+        monkeypatch.setattr(qa, "run", fake_run)
+        parse_html.apply_answer_questions(result, self._settings(), api_key="fake")
+
+        assert result["data"]["application_questions"] == ["Are you legally authorized to work in Canada?"]
+        assert result["data"]["answers"][0]["answer"] == "Yes."
+        assert "qa_error" not in result
+
+    def test_failure_sets_qa_error_without_discarding_parse(self, monkeypatch):
+        result = self._base_result()
+        original_data = dict(result["data"])
+
+        def fake_run(title, source_url, text, settings):
+            raise FileNotFoundError("resume file not found: resume.md")
+
+        monkeypatch.setattr(qa, "run", fake_run)
+        parse_html.apply_answer_questions(result, self._settings(), api_key="fake")
+
+        assert result["ok"] is True
+        assert "resume file not found" in result["qa_error"]
+        assert result["data"] == original_data
+        assert "application_questions" not in result["data"]
+
+    def test_passes_resume_and_model_settings_through(self, monkeypatch):
+        result = self._base_result()
+        captured = {}
+
+        def fake_run(title, source_url, text, settings):
+            captured.update(settings)
+            return {"application_questions": [], "answers": []}
+
+        monkeypatch.setattr(qa, "run", fake_run)
+        settings = {"resume_path": "my_resume.md", "qa_provider": "anthropic", "qa_model": "opus5"}
+        parse_html.apply_answer_questions(result, settings, api_key="fake-key")
+
+        assert captured["resume_path"] == "my_resume.md"
+        assert captured["provider"] == "anthropic"
+        assert captured["model"] == "opus5"
+        assert captured["api_key"] == "fake-key"

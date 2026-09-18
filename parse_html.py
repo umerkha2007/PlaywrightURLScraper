@@ -49,6 +49,10 @@ DEFAULT_OUTPUT_DIR = "."
 DEFAULT_CONFIG_PATH = "config.json"
 DEFAULT_VERBOSE = False
 DEFAULT_LOG_JSON = False
+DEFAULT_ANSWER_QUESTIONS = False
+DEFAULT_RESUME_PATH = "resume.md"
+DEFAULT_QA_PROVIDER = "anthropic"
+DEFAULT_QA_MODEL = None
 
 DEFAULTS = {
     "selector": DEFAULT_SELECTOR,
@@ -57,6 +61,10 @@ DEFAULTS = {
     "output_dir": DEFAULT_OUTPUT_DIR,
     "verbose": DEFAULT_VERBOSE,
     "log_json": DEFAULT_LOG_JSON,
+    "answer_questions": DEFAULT_ANSWER_QUESTIONS,
+    "resume_path": DEFAULT_RESUME_PATH,
+    "qa_provider": DEFAULT_QA_PROVIDER,
+    "qa_model": DEFAULT_QA_MODEL,
 }
 
 
@@ -343,7 +351,93 @@ def parse_args(argv=None):
         default=None,
         help="Additionally log the final result JSON, pretty-printed, to stderr.",
     )
+    parser.add_argument(
+        "--answer-questions",
+        dest="answer_questions",
+        action="store_const",
+        const=True,
+        default=None,
+        help="After parsing, use an LLM (Anthropic by default) to identify application/screening "
+             "questions in the extracted text and answer them from your resume (see --resume). "
+             "This is the only part of this project that calls an LLM or the network beyond "
+             "render-url; off by default.",
+    )
+    parser.add_argument(
+        "--resume",
+        dest="resume_path",
+        default=None,
+        help=f"Path to your resume in Markdown, used as the source of truth when answering "
+             f"questions (default: {DEFAULT_RESUME_PATH}).",
+    )
+    parser.add_argument(
+        "--qa-provider",
+        dest="qa_provider",
+        default=None,
+        help=f"LLM provider for --answer-questions (default: {DEFAULT_QA_PROVIDER}; only anthropic "
+             f"is currently implemented).",
+    )
+    parser.add_argument(
+        "--qa-model",
+        dest="qa_model",
+        default=None,
+        help="Model short name (e.g. sonnet5, opus5) or full model ID for --answer-questions "
+             "(env: ANTHROPIC_MODEL, default: sonnet5).",
+    )
+    parser.add_argument(
+        "--qa-api-key",
+        dest="qa_api_key",
+        default=None,
+        help="API key for --answer-questions (env: ANTHROPIC_API_KEY, or a .env file).",
+    )
     return parser.parse_args(argv)
+
+
+def qa_gate_error(detected_status):
+    """--answer-questions is only allowed to call the LLM on a page that render-url's --detect
+    classified as APPLICATION. This keeps QA from running (and spending API calls) on a CAPTCHA,
+    login wall, closed job, bot challenge, or otherwise-unclassified page.
+
+    `detected_status` is the upstream "status" field: None if the page was never run through
+    --detect at all, or one of the detector's STATUS_* values otherwise. Returns an error message
+    string to store in result["qa_error"] if QA should be blocked, or None if it's clear to proceed.
+    """
+    if detected_status is None:
+        return ("--answer-questions requires --detect: only pages rendered with render-url's "
+                "--detect flag and classified as APPLICATION are sent to the LLM.")
+    if detected_status != "APPLICATION":
+        return f"--answer-questions skipped: page was classified as {detected_status}, not APPLICATION."
+    return None
+
+
+def apply_answer_questions(result, settings, api_key=None, verbose=False):
+    """Mutates `result["data"]` in place, adding "application_questions" and "answers"
+    via qa.run(). On failure, sets result["qa_error"] instead of raising, so a QA problem
+    (missing resume, missing API key, LLM error) never discards the deterministic parse.
+    """
+    import qa  # imported lazily so the anthropic dependency is only needed when used
+
+    data = result.get("data") or {}
+    _log(verbose, "answering application questions via LLM")
+    try:
+        qa_result = qa.run(
+            result.get("title"),
+            result.get("source_url"),
+            data.get("text", ""),
+            {
+                "resume_path": settings["resume_path"],
+                "provider": settings["qa_provider"],
+                "model": settings["qa_model"],
+                "api_key": api_key,
+            },
+        )
+    except Exception as e:  # noqa: BLE001 - never let a QA failure break the parse result
+        _log(verbose, f"question-answering failed: {e}")
+        result["qa_error"] = str(e)
+        return
+
+    data["application_questions"] = qa_result["application_questions"]
+    data["answers"] = qa_result["answers"]
+    result["data"] = data
 
 
 def _print_result(result, log_json):
@@ -414,6 +508,14 @@ def main():
         except Exception as e:
             _log(verbose, f"unexpected error: {e}")
             result = error_result(source_url, "unknown_error", str(e))
+
+    if settings["answer_questions"] and result.get("ok") and result.get("data") is not None:
+        gate_error = qa_gate_error(step1.get("status"))
+        if gate_error:
+            _log(verbose, gate_error)
+            result["qa_error"] = gate_error
+        else:
+            apply_answer_questions(result, settings, api_key=args.qa_api_key, verbose=verbose)
 
     _print_result(result, log_json)
     output_path = next_output_path(settings["output_prefix"], settings["output_dir"])

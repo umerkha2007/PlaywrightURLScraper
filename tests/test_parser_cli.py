@@ -138,6 +138,122 @@ def test_output_files_auto_increment_and_no_overwrite():
         input_file.unlink(missing_ok=True)
 
 
+# --- --answer-questions (CLI-level; qa.run() itself is unit-tested elsewhere) ---
+# These run the real subprocess with no anthropic install / API key required.
+# --answer-questions is gated on the input having gone through --detect and been
+# classified APPLICATION (see parse_html.qa_gate_error); the resume/API-key checks
+# below only run once that gate is satisfied, via a step1 JSON with "status": "APPLICATION"
+# (mimicking render-url --detect's output). A QA failure must never crash the process or
+# discard the deterministic parse.
+
+def _detected_application_step1(html):
+    return {
+        "ok": True, "url": "https://example.com", "html": html, "error": None,
+        "status": "APPLICATION", "reason": "application_form_detected",
+    }
+
+
+def test_answer_questions_missing_resume_sets_qa_error_not_crash(tmp_path):
+    html = (FIXTURES / "full_page.html").read_text(encoding="utf-8")
+    input_file = write_step1_json(tmp_path, "step1.json", _detected_application_step1(html))
+
+    proc = run_parser([
+        str(input_file),
+        "--answer-questions",
+        "--resume", str(tmp_path / "does_not_exist.md"),
+        "--qa-api-key", "fake-key",
+    ])
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout.strip())
+    assert result["ok"] is True
+    assert "resume file not found" in result["qa_error"]
+    assert "application_questions" not in result["data"]
+
+
+def test_answer_questions_missing_api_key_sets_qa_error(tmp_path):
+    html = (FIXTURES / "full_page.html").read_text(encoding="utf-8")
+    input_file = write_step1_json(tmp_path, "step1.json", _detected_application_step1(html))
+    resume_file = tmp_path / "resume.md"
+    resume_file.write_text("# Jane Doe", encoding="utf-8")
+
+    env = os.environ.copy()
+    env.pop("ANTHROPIC_API_KEY", None)
+    cmd = [sys.executable, str(PARSER_SCRIPT), str(input_file), "--answer-questions", "--resume", str(resume_file)]
+    # cwd=tmp_path (not ROOT): qa.run() calls load_dotenv(".env") relative to cwd, and a real
+    # .env in the repo root (if present) must not leak an API key into this test.
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30, cwd=tmp_path, env=env)
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout.strip())
+    assert result["ok"] is True
+    assert "Missing API key" in result["qa_error"]
+
+
+def test_answer_questions_off_by_default(tmp_path):
+    html = (FIXTURES / "full_page.html").read_text(encoding="utf-8")
+    input_file = write_step1_json(tmp_path, "step1.json", _detected_application_step1(html))
+
+    proc = run_parser([str(input_file)])
+    result = json.loads(proc.stdout.strip())
+    assert "qa_error" not in result
+
+
+def test_answer_questions_without_detect_status_is_blocked(tmp_path):
+    """Input that was never run through --detect (no "status" field) must not reach the LLM,
+    even with valid --resume/--qa-api-key -- --answer-questions requires --detect."""
+    html = (FIXTURES / "full_page.html").read_text(encoding="utf-8")
+    step1 = {"ok": True, "url": "https://example.com", "html": html, "error": None}
+    input_file = write_step1_json(tmp_path, "step1.json", step1)
+    resume_file = tmp_path / "resume.md"
+    resume_file.write_text("# Jane Doe", encoding="utf-8")
+
+    proc = run_parser([
+        str(input_file), "--answer-questions", "--resume", str(resume_file), "--qa-api-key", "fake-key",
+    ])
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout.strip())
+    assert result["ok"] is True
+    assert "requires --detect" in result["qa_error"]
+    assert "application_questions" not in result["data"]
+
+
+def test_answer_questions_skipped_when_parse_itself_failed(tmp_path):
+    """ok=false (e.g. Step 1 had no html) must never trigger a QA call, regardless of status."""
+    step1 = {
+        "ok": False, "url": "http://bad", "html": None,
+        "error": {"type": "invalid_url", "message": "bad"}, "status": "APPLICATION",
+    }
+    input_file = write_step1_json(tmp_path, "step1_fail.json", step1)
+
+    proc = run_parser([str(input_file), "--answer-questions", "--qa-api-key", "fake-key"])
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout.strip())
+    assert result["ok"] is False
+    assert "qa_error" not in result
+
+
+def test_answer_questions_non_application_status_is_blocked(tmp_path):
+    """A page --detect classified as something other than APPLICATION must not reach the LLM
+    even if (unusually) html/data are still present."""
+    html = (FIXTURES / "full_page.html").read_text(encoding="utf-8")
+    step1 = {
+        "ok": True, "url": "https://example.com", "html": html, "error": None,
+        "status": "CAPTCHA", "reason": "captcha_detected",
+    }
+    input_file = write_step1_json(tmp_path, "step1.json", step1)
+    resume_file = tmp_path / "resume.md"
+    resume_file.write_text("# Jane Doe", encoding="utf-8")
+
+    proc = run_parser([
+        str(input_file), "--answer-questions", "--resume", str(resume_file), "--qa-api-key", "fake-key",
+    ])
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout.strip())
+    assert result["ok"] is True
+    assert "classified as CAPTCHA" in result["qa_error"]
+    assert "application_questions" not in result["data"]
+    assert "application_questions" not in result["data"]
+
+
 def test_selector_cli_flag(tmp_path):
     html = (FIXTURES / "scoped_content.html").read_text(encoding="utf-8")
     step1 = {"ok": True, "url": "https://example.com", "html": html, "error": None}

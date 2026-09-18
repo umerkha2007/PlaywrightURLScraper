@@ -26,7 +26,7 @@ This puts `render-url` and `parse-html` on your `PATH`.
 render-url "https://example.com"
 ```
 
-Prints one JSON object to stdout and writes it to an auto-incremented file (`rendered_page_1.json`, `rendered_page_2.json`, ...). Never overwrites existing files.
+Prints one JSON object to stdout and writes it to an auto-incremented file (`rendered_page_1.json`, `rendered_page_2.json`, ...). Never overwrites existing files. With `--raw-html`, it prints and writes the rendered HTML instead (see [Raw HTML mode](#raw-html-mode---raw-html)).
 
 | Parameter | Flag | Default | Description |
 |---|---|---|---|
@@ -41,6 +41,22 @@ Prints one JSON object to stdout and writes it to an auto-incremented file (`ren
 | Verbose | `--verbose` / `-v` | off | Log progress (navigation, waits, extraction, browser lifecycle) to stderr. Stdout still carries only the final JSON. |
 | Log JSON | `--log-json` | off | Additionally pretty-print the final result JSON to stderr. |
 | Detect | `--detect` | off | Check what kind of page this actually is before returning HTML. See [Detecting what kind of page you got](#detecting-what-kind-of-page-you-got) below. |
+| Raw HTML | `--raw-html` | off | Print the rendered HTML itself (not JSON) to stdout and write it to `<prefix>_N.html`. All other options still apply. If no HTML was produced (an error, or `--detect` found a non-application page), the JSON result is printed instead so you can see why. |
+
+#### Raw HTML mode (`--raw-html`)
+
+Want the page's HTML itself rather than a JSON wrapper around it? Add `--raw-html`:
+
+```bash
+render-url "https://example.com" --raw-html                       # HTML on stdout + rendered_page_1.html
+render-url "https://example.com" --raw-html > page.html           # capture just the HTML
+render-url "https://example.com" --raw-html --stabilization 3000  # every other option still applies
+```
+
+- stdout is the post-JavaScript HTML (`document.documentElement.outerHTML`) and nothing else; diagnostics (`-v`) still go to stderr.
+- The file written is `<prefix>_N.html` (auto-incremented, never overwrites) instead of `.json`.
+- **Fallback:** if there is no HTML to return — the render failed, or `--detect` classified the page as anything other than `APPLICATION` — the normal JSON result is printed instead (and saved as `.json`), so you can see what went wrong. Check whether stdout starts with `{"ok":` to tell the two apart.
+- Can also be set with `"raw_html": true` in `config.json`. If your config has `"detect": true`, non-application pages will hit the fallback above.
 
 ### `parse-html` — extract structured data from rendered HTML
 
@@ -71,6 +87,64 @@ Reads a `render-url` JSON file (or stdin via `-`), extracts fields from its `htm
 | `images` | `<img src>` + `alt`, in order | `alt` defaults to `""`; no `src` excluded |
 | `meta` | `<meta name/property>` -> `content` | later tag wins on duplicate keys |
 | `text` | visible body text (scripts/styles excluded) | `""` if none |
+
+### Answering application questions with an LLM (optional)
+
+`parse-html` and `render-and-parse` can optionally use an LLM (Anthropic Claude by default) to
+identify the application/screening questions on the page and answer them from your resume. This
+is the **only** LLM/network-calling feature in the project — everything else stays deterministic
+and offline; it's off by default and lives entirely behind `--answer-questions`.
+
+**`--answer-questions` requires `--detect`, and only runs when the page is classified
+`APPLICATION`.** This keeps the LLM from ever being called on a CAPTCHA, login wall, closed job,
+bot challenge, or other non-application page. `render-and-parse` rejects `--answer-questions`
+without `--detect` immediately, before even launching Chromium. For the two-stage pipeline,
+`parse-html --answer-questions` reads the same signal from its input file's `"status"` field
+(present only when that file came from `render-url --detect`) — with no `"status"` field, or a
+`"status"` other than `APPLICATION`, it skips the LLM call and returns `qa_error` explaining why
+instead.
+
+```bash
+pip install -e ".[qa]"   # installs the anthropic SDK
+cp .env.example .env     # fill in ANTHROPIC_API_KEY
+```
+
+Write your resume as Markdown in `resume.md` (gitignored — never commit it), then:
+
+```bash
+render-url "https://example.com/job/123" --detect
+parse-html rendered_page_1.json --answer-questions
+
+# or in one step:
+render-and-parse "https://example.com/job/123" --detect --answer-questions
+```
+
+| Parameter | Flag | Env var | Default | Description |
+|---|---|---|---|---|
+| Enable | `--answer-questions` | — | off | Turns the feature on. Also settable via `"answer_questions": true` in the `"parser"` section of `config.json`. Requires `--detect` (see above). |
+| Resume | `--resume <path>` | — | `resume.md` | Path to your resume in Markdown; the LLM's source of truth when answering. |
+| Provider | `--qa-provider <name>` | `LLM_PROVIDER` | `anthropic` | Only `anthropic` is currently implemented. |
+| Model | `--qa-model <name>` | `ANTHROPIC_MODEL` | `sonnet5` | Short name (`sonnet5`, `opus5`, `haiku4.5`, ...) or a full model ID. |
+| API key | `--qa-api-key <key>` | `ANTHROPIC_API_KEY` | — | Read from `.env` if not passed/set. Required unless the feature is off. |
+
+On success, two fields are added to the result's `data`:
+
+```json
+{
+  "application_questions": ["Are you legally authorized to work in Canada?"],
+  "answers": [
+    {"question": "Are you legally authorized to work in Canada?", "answer": "Yes."}
+  ]
+}
+```
+
+If the resume can't answer a question confidently, `"answer"` is `null` rather than a guess. If
+QA is blocked (missing `--detect`, page not classified `APPLICATION`) or fails for any other
+reason (missing resume, missing API key, LLM error), the deterministic parse result is still
+returned with a top-level `"qa_error"` string describing what happened — a QA failure or gate
+never discards the parse. `render-and-parse` with `--answer-questions` but no `--detect` is the
+one case that's a hard error instead (`"error": {"type": "invalid_input", ...}`), since it can be
+caught before any rendering happens.
 
 ### `render-and-parse` — do both in one command
 
@@ -144,7 +218,8 @@ python -m pytest tests/ -v
 pip install build twine
 
 # bump "version" in pyproject.toml first, then:
-rm -rf dist build render_url.egg-info    # PowerShell: Remove-Item -Recurse -Force dist, build, render_url.egg-info -ErrorAction SilentlyContinue
+rm -rf dist build render_url.egg-info    
+# PowerShell: Remove-Item -Recurse -Force dist, build, render_url.egg-info -ErrorAction SilentlyContinue
 python -m build                # builds dist/*.whl and dist/*.tar.gz
 python -m twine check dist/*   # validates metadata before upload
 python -m twine upload dist/*  # uploads to PyPI (prompts for credentials/token)
@@ -174,7 +249,11 @@ Precedence: **built-in defaults < `config.json` < CLI flags**. Both tools share 
     "output_prefix": "parsed_page",
     "output_dir": ".",
     "verbose": false,
-    "log_json": false
+    "log_json": false,
+    "answer_questions": false,
+    "resume_path": "resume.md",
+    "qa_provider": "anthropic",
+    "qa_model": "sonnet5"
   },
   "detector": {
     "threshold": 10,
@@ -232,12 +311,14 @@ Errors: `invalid_input`, `missing_html` (Step 1 failed or had no `html`), `inval
 
 When `render-and-parse` is run with `--detect` and the page isn't classified as `APPLICATION`, `data` comes back `null` and the same `status`/`reason`/`detector`/`form`/`redirected` fields as above are included instead.
 
+**`parse-html` with `--answer-questions`** adds `application_questions`/`answers` to `data` on success (see [Answering application questions with an LLM](#answering-application-questions-with-an-llm-optional)), or a top-level `"qa_error"` string if the `--detect`/`APPLICATION` gate blocked it or QA itself failed (the deterministic `data` above is still returned either way).
+
 Both tools always print exactly one JSON object to stdout (success or failure) — diagnostics go to stderr only.
 
 ## What this project intentionally does NOT do
 
 - No crawling, link-following, or multi-URL batching.
 - No DOM mutation, clicking, form submission, or authentication.
-- No LLM, AI, embeddings, or semantic interpretation — structural extraction and rule-based classification only.
+- No LLM, AI, embeddings, or semantic interpretation in `render-url`/`parse-html`'s core behavior — structural extraction and rule-based classification only. The sole exception is the opt-in `--answer-questions` feature (see above), which is off by default.
 - No solving or bypassing CAPTCHAs or bot-protection challenges — `--detect` only tells you one is there.
 - `parse-html` makes no network calls and never launches a browser.

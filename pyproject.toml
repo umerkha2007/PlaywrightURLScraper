@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "render-url"
-version = "1.1.1"
+version = "1.1.2"
 description = "Render a single URL with Chromium (via Playwright) and emit the post-JS DOM as JSON."
 readme = "README.md"
 requires-python = ">=3.8"
@@ -13,11 +13,14 @@ dependencies = [
     "beautifulsoup4>=4.12.0",
 ]
 
+[project.optional-dependencies]
+qa = ["anthropic>=0.40.0"]
+
 [project.scripts]
 render-url = "render_url:main"
 parse-html = "parse_html:main"
 render-and-parse = "render_and_parse:main"
 
 [tool.setuptools]
-py-modules = ["render_url", "parse_html", "render_and_parse"]
+py-modules = ["render_url", "parse_html", "render_and_parse", "qa"]
 packages = ["detector"]

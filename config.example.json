@@ -15,7 +15,11 @@
     "output_prefix": "parsed_page",
     "output_dir": ".",
     "verbose": false,
-    "log_json": false
+    "log_json": false,
+    "answer_questions": false,
+    "resume_path": "resume.md",
+    "qa_provider": "anthropic",
+    "qa_model": "sonnet5"
   },
   "detector": {
     "threshold": 10,
